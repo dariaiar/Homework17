@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - database
+    environment:
+      - REDIS_ADDR=database:6379
+  database:
+    image: redis
+    ports:
+      - "6379:6379"
