@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -14,11 +16,20 @@ var ctx = context.Background()
 var rdb *redis.Client
 
 func main() {
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379" // default to localhost if no env variable
+	}
+
 	rdb = redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
+		Addr:     redisAddr,
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
+	_, err := readCache("tasks")
+	if err != nil {
+		log.Println("No cache found for key 'tasks'")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("ToDo list")
@@ -27,9 +38,9 @@ func main() {
 	mux.HandleFunc("POST /task", checkAuth(postTask))
 	mux.HandleFunc("PUT /task", checkAuth(editTask))
 	mux.HandleFunc("DELETE /task", checkAuth(deleteTask))
-	err := http.ListenAndServe(":8080", mux)
-	if err != nil {
-		fmt.Println("Error happened", err.Error())
+	err2 := http.ListenAndServe(":8081", mux)
+	if err2 != nil {
+		fmt.Println("Error happened", err2.Error())
 		return
 	}
 }
@@ -64,8 +75,8 @@ func checkAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type TaskManager struct {
-	ID          int
-	Description string
+	ID          int    `json:"id"`
+	Description string `json:"description"`
 }
 
 var tasks = []TaskManager{
@@ -74,6 +85,24 @@ var tasks = []TaskManager{
 	{ID: 3, Description: "Close computer"},
 }
 
+func setCache(key string, value string, expiration time.Duration) error {
+	err := rdb.Set(ctx, key, value, expiration).Err()
+	if err != nil {
+		log.Printf("Error setting cache for key %s: %v", key, err)
+		return err
+	}
+	log.Printf("Successfully set cache for key %s, %s", key, value)
+	return nil
+}
+func readCache(key string) (string, error) {
+	value, err := rdb.Get(ctx, key).Result()
+	if err != nil {
+		log.Printf("Error reading cache for key %s: %v", key, err)
+		return "", err
+	}
+	log.Printf("Cache for key %s: %s", key, value)
+	return value, nil
+}
 func getToDoList(w http.ResponseWriter, r *http.Request) {
 	cachedTasks, err := rdb.Get(ctx, "tasks").Result()
 	if err == nil {
@@ -89,7 +118,7 @@ func getToDoList(w http.ResponseWriter, r *http.Request) {
 	}
 	tasksJSON, err := json.Marshal(tasks)
 	if err == nil {
-		rdb.Set(ctx, "tasks", tasksJSON, time.Minute*10) // Кешируем на 10 минут
+		setCache("tasks", string(tasksJSON), time.Minute*10)
 	}
 }
 
@@ -101,14 +130,14 @@ func postTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tasks = append(tasks, newTask)
-	err = json.NewEncoder(w).Encode(tasks)
+	err = json.NewEncoder(w).Encode(newTask)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	tasksJSON, err := json.Marshal(tasks)
 	if err == nil {
-		rdb.Set(ctx, "tasks", tasksJSON, time.Minute*10)
+		setCache("tasks", string(tasksJSON), time.Minute*10)
 	}
 }
 
@@ -125,7 +154,7 @@ func editTask(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	err = json.NewEncoder(w).Encode(tasks)
+	err = json.NewEncoder(w).Encode(updatedTask)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -133,7 +162,7 @@ func editTask(w http.ResponseWriter, r *http.Request) {
 
 	tasksJSON, err := json.Marshal(tasks)
 	if err == nil {
-		rdb.Set(ctx, "tasks", tasksJSON, time.Minute*10)
+		setCache("tasks", string(tasksJSON), time.Minute*10)
 	}
 }
 func deleteTask(w http.ResponseWriter, r *http.Request) {
@@ -149,13 +178,13 @@ func deleteTask(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	err = json.NewEncoder(w).Encode(tasks)
+	err = json.NewEncoder(w).Encode(taskToDelete)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	tasksJSON, err := json.Marshal(tasks)
 	if err == nil {
-		rdb.Set(ctx, "tasks", tasksJSON, time.Minute*10)
+		setCache("tasks", string(tasksJSON), time.Minute*10)
 	}
 }
